@@ -77,25 +77,7 @@ serve(async (req) => {
       );
     }
 
-    // Mark key as used
-    const { error: updateKeyError } = await supabaseClient
-      .from('balance_keys')
-      .update({
-        used: true,
-        used_by: user.id,
-        used_at: new Date().toISOString()
-      })
-      .eq('id', keyData.id);
-
-    if (updateKeyError) {
-      console.error('Error updating key:', updateKeyError);
-      return new Response(
-        JSON.stringify({ error: 'Key güncellenirken hata oluştu' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // Update user balance - create profile if doesn't exist
+    // First, get or create user profile
     const { data: profile, error: profileError } = await supabaseClient
       .from('profiles')
       .select('balance')
@@ -137,8 +119,10 @@ serve(async (req) => {
       currentBalance = profile.balance || 0;
     }
 
+    // Calculate new balance
     const newBalance = parseFloat(currentBalance.toString()) + parseFloat(keyData.amount.toString());
 
+    // Update balance
     const { error: balanceError } = await supabaseClient
       .from('profiles')
       .update({ balance: newBalance })
@@ -153,6 +137,22 @@ serve(async (req) => {
     }
 
     console.log('Balance updated successfully:', { user_id: user.id, amount: keyData.amount, new_balance: newBalance });
+
+    // ONLY AFTER successful balance update, mark key as used
+    const { error: updateKeyError } = await supabaseClient
+      .from('balance_keys')
+      .update({
+        used: true,
+        used_by: user.id,
+        used_at: new Date().toISOString()
+      })
+      .eq('id', keyData.id);
+
+    if (updateKeyError) {
+      console.error('Error updating key (balance already added):', updateKeyError);
+      // Note: Balance was already added successfully, so we still return success
+      // but log the key update error
+    }
 
     return new Response(
       JSON.stringify({ 
