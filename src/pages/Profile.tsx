@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 import { useNavigate } from "react-router-dom";
 import Navbar from "@/components/Navbar";
@@ -7,11 +7,20 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Star, Package, Wallet, LogOut, User } from "lucide-react";
-import { useEffect } from "react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Star, Package, Wallet, LogOut, User, Camera, Edit } from "lucide-react";
+import { useEffect, useState, useRef } from "react";
+import { useToast } from "@/hooks/use-toast";
 
 const Profile = () => {
   const navigate = useNavigate();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isEditingUsername, setIsEditingUsername] = useState(false);
+  const [newUsername, setNewUsername] = useState("");
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
 
   const { data: session } = useQuery({
     queryKey: ["session"],
@@ -53,9 +62,92 @@ const Profile = () => {
     }
   }, [session, navigate]);
 
+  useEffect(() => {
+    if (profile?.username) {
+      setNewUsername(profile.username);
+    }
+  }, [profile]);
+
   const handleLogout = async () => {
     await supabase.auth.signOut();
     navigate("/");
+  };
+
+  const updateUsernameMutation = useMutation({
+    mutationFn: async (username: string) => {
+      const { error } = await supabase
+        .from("profiles")
+        .update({ username })
+        .eq("user_id", session!.user.id);
+      
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["profile"] });
+      setIsEditingUsername(false);
+      toast({
+        title: "Başarılı",
+        description: "Kullanıcı adınız güncellendi",
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Hata",
+        description: "Kullanıcı adı güncellenemedi",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !session?.user) return;
+
+    setIsUploadingAvatar(true);
+
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${session.user.id}.${fileExt}`;
+      const filePath = `${session.user.id}/${fileName}`;
+
+      // Delete old avatar if exists
+      if (profile?.avatar_url) {
+        const oldPath = profile.avatar_url.split('/').slice(-2).join('/');
+        await supabase.storage.from('avatars').remove([oldPath]);
+      }
+
+      const { error: uploadError } = await supabase.storage
+        .from('avatars')
+        .upload(filePath, file, { upsert: true });
+
+      if (uploadError) throw uploadError;
+
+      const { data: { publicUrl } } = supabase.storage
+        .from('avatars')
+        .getPublicUrl(filePath);
+
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ avatar_url: publicUrl })
+        .eq('user_id', session.user.id);
+
+      if (updateError) throw updateError;
+
+      queryClient.invalidateQueries({ queryKey: ["profile"] });
+      toast({
+        title: "Başarılı",
+        description: "Profil fotoğrafınız güncellendi",
+      });
+    } catch (error) {
+      console.error('Avatar upload error:', error);
+      toast({
+        title: "Hata",
+        description: "Profil fotoğrafı yüklenemedi",
+        variant: "destructive",
+      });
+    } finally {
+      setIsUploadingAvatar(false);
+    }
   };
 
   return (
@@ -72,13 +164,73 @@ const Profile = () => {
               </CardHeader>
               <CardContent className="space-y-6">
                 <div className="flex flex-col items-center text-center">
-                  <Avatar className="w-24 h-24 mb-4">
-                    <AvatarImage src={profile?.avatar_url} />
-                    <AvatarFallback className="bg-brand-blue/10">
-                      <User className="w-12 h-12 text-brand-blue" />
-                    </AvatarFallback>
-                  </Avatar>
-                  <h3 className="font-bold text-xl mb-1">{profile?.username || "Kullanıcı"}</h3>
+                  <div className="relative mb-4">
+                    <Avatar className="w-24 h-24">
+                      <AvatarImage src={profile?.avatar_url} />
+                      <AvatarFallback className="bg-brand-blue/10">
+                        <User className="w-12 h-12 text-brand-blue" />
+                      </AvatarFallback>
+                    </Avatar>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleAvatarChange}
+                    />
+                    <Button
+                      size="icon"
+                      variant="secondary"
+                      className="absolute bottom-0 right-0 rounded-full w-8 h-8"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={isUploadingAvatar}
+                    >
+                      <Camera className="w-4 h-4" />
+                    </Button>
+                  </div>
+                  
+                  {isEditingUsername ? (
+                    <div className="w-full max-w-xs space-y-2">
+                      <Input
+                        value={newUsername}
+                        onChange={(e) => setNewUsername(e.target.value)}
+                        placeholder="Kullanıcı adı"
+                        className="text-center"
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => updateUsernameMutation.mutate(newUsername)}
+                          disabled={updateUsernameMutation.isPending || !newUsername}
+                        >
+                          Kaydet
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setIsEditingUsername(false);
+                            setNewUsername(profile?.username || "");
+                          }}
+                        >
+                          İptal
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-bold text-xl">{profile?.username || "Kullanıcı"}</h3>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-6 w-6"
+                        onClick={() => setIsEditingUsername(true)}
+                      >
+                        <Edit className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  )}
+                  
                   <p className="text-sm text-muted-foreground mb-3">{session?.user?.email}</p>
                   {profile?.verified && (
                     <Badge className="bg-success-green/10 text-success-green">
